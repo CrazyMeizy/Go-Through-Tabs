@@ -2,8 +2,10 @@
   if (globalThis.__linkedHistoryInstalled) return;
   globalThis.__linkedHistoryInstalled = true;
   const topFrame = window === window.top;
+  let enabled = false;
 
   function snapshot(navigationType = null) {
+    if (topFrame && !/^https?:$/.test(location.protocol)) return null;
     const entry = window.navigation?.currentEntry;
     if (!entry?.key) return null;
     return {
@@ -35,7 +37,11 @@
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
     if (message.type === 'get-snapshot') respond(snapshot());
     if (message.type === 'notice' && topFrame) showNotice(message.text);
+    if (message.type === 'settings' && typeof message.enabled === 'boolean') enabled = message.enabled;
   });
+  chrome.runtime.sendMessage({type: 'settings'}).then(settings => {
+    enabled = settings?.enabled === true;
+  }).catch(() => {});
 
   window.addEventListener('keydown', event => {
     if (!event.isTrusted || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
@@ -53,6 +59,31 @@
       fallback();
     }
   }, true);
+
+  // A new tab's initial empty document has no content-script lifecycle yet.
+  // Commit our local keyboard reader before starting a Command/middle-click
+  // navigation. Bubble after target/document handlers so cancelled clicks stay cancelled.
+  function openLinkedTab(event) {
+    if (!enabled || !event.isTrusted || event.defaultPrevented || event.altKey || event.ctrlKey) return;
+    const commandClick = event.type === 'click' && event.button === 0 && event.metaKey;
+    const middleClick = event.type === 'auxclick' && event.button === 1;
+    if (!commandClick && !middleClick) return;
+    const link = event.composedPath().find(element =>
+      element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement);
+    if (!link || link.hasAttribute('download') || !/^https?:/.test(link.href)) return;
+    try {
+      if (!chrome.runtime.id) return;
+    } catch { return; }
+    const url = link.href;
+    event.preventDefault();
+    const fallback = () => window.open(url, '_blank', 'noopener');
+    try {
+      chrome.runtime.sendMessage({type: 'open-linked-tab', url, active: event.shiftKey})
+        .then(response => { if (!response?.ok) fallback(); }).catch(fallback);
+    } catch { fallback(); }
+  }
+  window.addEventListener('click', openLinkedTab);
+  window.addEventListener('auxclick', openLinkedTab);
 
   function showNotice(text) {
     if (!document.documentElement) return;

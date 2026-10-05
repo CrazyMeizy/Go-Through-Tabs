@@ -20,6 +20,35 @@ function close(model, node, parent, sessionId = 'session') {
   model.finishClose(node, sessionId);
 }
 
+test('an uncommitted linked child survives closing/restoring without inventing a website entry', () => {
+  const model = new LinkedHistory();
+  const a = model.ensure(tab(1));
+  const b = model.ensure(tab(2), true);
+  model.observe(a, page('a2'));
+  model.link(b, a);
+  b.loadingURL = 'https://fixture.test/slow';
+  assert.equal(model.parentForBack(b), null);
+  assert.equal(model.parentForBack(b, true), a);
+  model.beginClose(b, a, {url: b.loadingURL, uncommitted: true, beforeIds: [], index: 1, pinned: false});
+  model.finishClose(b);
+  const restarted = new LinkedHistory(JSON.parse(JSON.stringify(model.state)));
+  const parent = restarted.state.nodes[a.id];
+  const child = restarted.state.nodes[b.id];
+  assert.equal(restarted.forwardAt(parent).childId, child.id);
+  assert.equal(child.closed.url, b.loadingURL);
+  assert.equal(child.closed.sessionId, null);
+  restarted.bindRestored(child, tab(20), true);
+  assert.equal(child.rootKey, null);
+  assert.equal(restarted.parentForBack(child, true), parent);
+  restarted.observe(child, page('first-web-entry', 'push'));
+  assert.equal(child.rootKey, 'first-web-entry');
+  assert.equal(restarted.parentForBack(child), parent);
+  restarted.observe(child, page('second-web-entry', 'push'));
+  assert.equal(restarted.parentForBack(child, true), null);
+  restarted.removeManually(parent);
+  assert.equal(restarted.parentForBack(child, true), null);
+});
+
 test('B closes only at its root; A traverses back and returns before B restoration', () => {
   const {model, a, b} = family();
   model.observe(b, page('b1', 'push'));

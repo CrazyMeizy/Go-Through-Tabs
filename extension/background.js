@@ -1,6 +1,7 @@
 import {LinkedHistory, matchClosedSession} from './history.js';
 
 const STORE = 'linkedHistory';
+const LOADING_PAGE = chrome.runtime.getURL('loading.html');
 let model;
 let tail = Promise.resolve();
 const epochs = new Map();
@@ -40,6 +41,7 @@ async function initialize() {
   for (const node of Object.values(model.state.nodes)) {
     if (node.closed?.pending) {
       if (live.has(node.tabId)) model.cancelClose(node);
+      else if (node.closed.uncommitted) model.finishClose(node);
       else {
         const sessions = await chrome.sessions.getRecentlyClosed();
         model.finishClose(node, matchClosedSession(node.closed.beforeIds, sessions, node.closed));
@@ -51,13 +53,21 @@ async function initialize() {
   await save();
 }
 
+async function boundedRead(work, fallback = null) {
+  let timer;
+  try {
+    return await Promise.race([work.catch(() => fallback),
+      new Promise(resolve => { timer = setTimeout(() => resolve(fallback), 250); })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function getSnapshot(tabId) {
-  const value = await chrome.tabs.sendMessage(tabId, {type: 'get-snapshot'}, {frameId: 0}).catch(() => null);
+  const value = await boundedRead(chrome.tabs.sendMessage(tabId, {type: 'get-snapshot'}, {frameId: 0}));
   if (!value) return null;
-  const frames = await chrome.webNavigation.getAllFrames({tabId}).catch(() => []) || [];
+  const frames = await boundedRead(chrome.webNavigation.getAllFrames({tabId}), []) || [];
   value.frames = (await Promise.all(frames.filter(frame => frame.frameId !== 0).map(async frame => {
-    const state = await chrome.tabs.sendMessage(tabId, {type: 'get-snapshot'},
-      {frameId: frame.frameId}).catch(() => null);
+    const state = await boundedRead(chrome.tabs.sendMessage(tabId, {type: 'get-snapshot'},
+      {frameId: frame.frameId}));
     return state?.key ? {...state, frameId: frame.frameId} : null;
   }))).filter(Boolean);
   return value;
@@ -76,6 +86,7 @@ function observe(node, value) {
   const type = value.navigationType ||
     (node.pendingNavigation?.key !== value.key ? node.pendingNavigation?.type : null);
   model.observe(node, {...value, navigationType: type || null});
+  delete node.loadingURL;
   node.pendingNavigation = null;
 }
 
@@ -90,7 +101,8 @@ async function activate(tabId) {
 
 async function waitForEntry(tabId, previousSignature) {
   // tabs.goBack resolves when navigation starts, rather than when it commits.
-  for (let attempt = 0; attempt < 45; attempt++) {
+  const deadline = Date.now() + 2250;
+  while (Date.now() < deadline) {
     const value = await getSnapshot(tabId);
     if (value?.key && entrySignature(value) !== previousSignature) return value;
     await delay(50);
@@ -121,9 +133,11 @@ async function closeToParent(node, parent, tab) {
   observe(parent, await getSnapshot(parent.tabId));
   // A protected source page cannot provide a stable restoration anchor.
   if (!parent.currentKey || !/^https?:/.test(parentTab.url || '')) return;
-  const sessions = await chrome.sessions.getRecentlyClosed();
+  const uncommitted = Boolean(node.loadingURL && !node.rootKey);
+  const sessions = uncommitted ? [] : await chrome.sessions.getRecentlyClosed();
   const record = {
-    url: tab.url, title: tab.title, index: tab.index, pinned: tab.pinned,
+    url: uncommitted ? node.loadingURL : tab.url,
+    title: tab.title, index: tab.index, pinned: tab.pinned, uncommitted,
     beforeIds: sessions.flatMap(item => item.tab ? [item.tab.sessionId] : []),
   };
   model.beginClose(node, parent, record);
@@ -138,14 +152,14 @@ async function closeToParent(node, parent, tab) {
       await activate(tab.id);
       return;
     }
-    model.finishClose(node, await identifySession(record));
+    model.finishClose(node, uncommitted ? null : await identifySession(record));
   } catch (error) {
     const stillOpen = await chrome.tabs.get(tab.id).catch(() => null);
     if (stillOpen) {
       model.cancelClose(node);
       await activate(tab.id);
     } else {
-      model.finishClose(node, await identifySession(record));
+      model.finishClose(node, uncommitted ? null : await identifySession(record));
     }
     throw error;
   } finally {
@@ -175,7 +189,7 @@ async function restoreChild(parent, edge) {
   const record = child.closed;
   let tab = null;
   let fallback = false;
-  if (record.sessionId) {
+  if (record.sessionId && !record.uncommitted) {
     restoringWindows.set(parent.windowId, null);
     try {
       // An exact ID may still be restorable even outside the 25-item query view.
@@ -191,14 +205,18 @@ async function restoreChild(parent, edge) {
   if (!tab) {
     fallback = true;
     const source = await chrome.tabs.get(parent.tabId);
-    tab = await chrome.tabs.create({windowId: source.windowId, url: record.url,
+    tab = await chrome.tabs.create({windowId: source.windowId,
+      url: record.uncommitted ? loadingURL(record.url) : record.url,
       index: source.index + 1, openerTabId: source.id, active: false});
   }
   model.bindRestored(child, tab, fallback);
+  if (record.uncommitted) child.loadingURL = record.url;
   child.restoring = !fallback;
   restoredTabs.add(tab.id);
   await save();
   await placeNextTo(tab.id, parent.tabId);
+  // There is no website entry/history to wait for or lose in this case.
+  if (record.uncommitted) return;
   let value = await getSnapshot(tab.id);
   for (let attempt = 0; !value && attempt < 30; attempt++) {
     await delay(50);
@@ -215,8 +233,10 @@ async function navigate(windowId, epoch, direction, sourceId) {
   // Activation notifications and content messages can arrive out of order.
   // A key from the still-active source is valid even after its activation event.
   if (epoch !== (epochs.get(windowId) || 0) && tab?.id !== sourceId) return;
-  if (!await normalTab(tab) || !/^https?:/.test(tab.url || '')) return;
+  if (!await normalTab(tab)) return;
   const node = model.ensure(tab);
+  const loading = node.loadingURL && tab.url?.startsWith(`${LOADING_PAGE}#`) && !node.rootKey;
+  if (!loading && !/^https?:/.test(tab.url || '')) return;
   observe(node, await getSnapshot(tab.id));
   if (!model.state.enabled) {
     await nativeNavigate(tab.id, direction, node);
@@ -228,7 +248,7 @@ async function navigate(windowId, epoch, direction, sourceId) {
       // Chrome may evict the oldest native entries from a long-lived tab.
       // Its actual boundary is authoritative even if the original root is gone.
       if (node.parentId && node.currentKey) node.rootKey = node.currentKey;
-      const parent = model.parentForBack(node);
+      const parent = model.parentForBack(node, loading);
       if (parent) await closeToParent(node, parent, tab);
     }
   } else {
@@ -237,6 +257,31 @@ async function navigate(windowId, epoch, direction, sourceId) {
     else await nativeNavigate(tab.id, direction, node);
   }
   await save();
+}
+
+function loadingURL(url) {
+  return `${LOADING_PAGE}#${encodeURIComponent(url)}`;
+}
+
+async function openLinkedTab(sourceId, message) {
+  const source = await chrome.tabs.get(sourceId);
+  if (!model.state.enabled || !await normalTab(source) || !/^https?:/.test(source.url || '') ||
+      typeof message.url !== 'string' || !/^https?:/.test(message.url)) return {ok: false};
+  const url = new URL(message.url).href;
+  const parent = model.ensure(source);
+  let tab;
+  try {
+    tab = await chrome.tabs.create({windowId: source.windowId, openerTabId: source.id,
+      index: source.index + 1, active: message.active === true, url: loadingURL(url)});
+    const child = model.ensure(tab, true);
+    child.loadingURL = url;
+    model.link(child, parent);
+    await save();
+    return {ok: true};
+  } catch (error) {
+    if (tab) await chrome.tabs.remove(tab.id).catch(() => {});
+    throw error;
+  }
 }
 
 async function nativeNavigate(tabId, direction, node) {
@@ -265,6 +310,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       model.state.notice = null;
       await chrome.action.setBadgeText({text: model.state.enabled ? '' : 'OFF'});
       await save();
+      for (const tab of await chrome.tabs.query({})) {
+        chrome.tabs.sendMessage(tab.id, {type: 'settings', enabled: model.state.enabled}).catch(() => {});
+      }
       return {enabled: model.state.enabled, notice: null};
     }).then(respond);
     return true;
@@ -272,6 +320,21 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (!sender.tab || sender.tab.incognito) return;
   const sourceId = sender.tab.id;
   const windowId = sender.tab.windowId;
+  if (message.type === 'settings') {
+    enqueue(() => ({enabled: model.state.enabled})).then(respond);
+    return true;
+  }
+  if (message.type === 'open-linked-tab') {
+    enqueue(() => openLinkedTab(sourceId, message)).then(respond)
+      .catch(() => respond({ok: false}));
+    return true;
+  }
+  if (message.type === 'loading-ready' && sender.frameId === 0 &&
+      sender.url?.startsWith(`${LOADING_PAGE}#`)) {
+    enqueue(() => ({ok: model.byTab(sourceId)?.loadingURL === message.url}))
+      .then(respond);
+    return true;
+  }
   if (message.type === 'navigate' && ['back', 'forward'].includes(message.direction)) {
     const epoch = epochs.get(windowId) || 0;
     enqueue(() => navigate(windowId, epoch, message.direction, sourceId))

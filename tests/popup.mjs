@@ -176,7 +176,7 @@ async function nativePopup() {
 try {
   const manifest = JSON.parse(await readFile(resolve(root, 'extension/manifest.json')));
   assert.equal(manifest.name, 'Go Through Tabs');
-  assert.equal(manifest.version, '1.1.0');
+  assert.equal(manifest.version, JSON.parse(await readFile(resolve(root, 'package.json'))).version);
   for (const [size, path] of Object.entries(manifest.icons)) {
     const png = await readFile(resolve(root, 'extension', path));
     assert.equal(png.toString('hex', 0, 8), '89504e470d0a1a0a');

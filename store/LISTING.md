@@ -14,6 +14,8 @@ Go Through Tabs для Chrome на macOS соединяет привычные �
 
 Работают вложенные цепочки вкладок, ссылки, открытые в фоне, SPA-переходы и фрагменты. Ручное переключение вкладок не добавляет шагов истории. В popup можно отключить специальные сочетания; светлая и тёмная темы следуют системе.
 
+Для Command + клик и средней кнопки возврат доступен даже до первого ответа сайта. Используется временная локальная страница, которая заменяется сайтом без дополнительного шага истории. Этот способ не передаёт исходный HTTP Referer; штатное открытие через меню Chrome сохраняется. Для других способов открытия скобки доступны после появления первого документа.
+
 Данные истории обрабатываются только локально в Chrome: адреса страниц, сведения о записях истории и связи вкладок. Нет серверов, аналитики и передачи этих данных разработчику.
 
 Chrome 120+ на macOS. Интерфейс на русском языке. Нужен фокус на HTTP/HTTPS-странице. Адресная строка, служебные страницы Chrome и встроенный PDF сохраняют штатное поведение браузера. Инкогнито не поддерживается. Перенос вкладки в другое окно разрывает связь.
@@ -61,5 +63,6 @@ Chrome 120+ on macOS. No login or credentials required. Interface language: Russ
 4. Press Command + ] at that source entry: the child restores, becomes active and appears immediately to the source's right. Another Command + ] traverses the child's native history forward.
 5. For source history A0 → A1 → A2 and child B0 → B1, verify back sequence B1 → B0 → A2 → A1 → A0 and forward sequence A0 → A1 → A2 → B0 → B1.
 6. Open the extension popup. Turn its switch off/on and reopen it to confirm the state. Shortcuts require focus on the page rather than the address bar. In a restored-session fallback, a notice explains that only the saved URL was reopened.
+7. Command-click a link to a server that delays its first response. Before any response arrives, activate the child and press Command + [: it closes immediately. Command + ] reopens the target next to its source; the pending child can close again before its response. Once loaded, Back closes at the first actual website entry, with no temporary loading-page step. There is no lost-history notice for a never-committed website.
 
 Tabs without a known live source are not automatically closed. Incognito, Chrome internal pages, Chrome Web Store and the built-in PDF viewer are outside the supported scope. Disable other extensions intercepting these shortcuts during review.

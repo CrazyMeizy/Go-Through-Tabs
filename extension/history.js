@@ -50,9 +50,11 @@ export class LinkedHistory {
     if (snapshot.frames) node.frames = snapshot.frames;
   }
 
-  parentForBack(node) {
+  parentForBack(node, uncommitted = false) {
     const parent = this.state.nodes[node?.parentId];
-    return node?.rootKey && node.currentKey === node.rootKey && parent?.tabId != null &&
+    const atRoot = node?.rootKey && node.currentKey === node.rootKey;
+    const beforeFirstEntry = uncommitted && node?.fresh && !node.rootKey && !node.currentKey;
+    return (atRoot || beforeFirstEntry) && parent?.tabId != null &&
       parent.windowId === node.windowId ? parent : null;
   }
 

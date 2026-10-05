@@ -1,6 +1,6 @@
 # Go Through Tabs — политика конфиденциальности
 
-Последнее обновление: 5 октября 2026 года. Относится к версии 1.1.0.
+Последнее обновление: 5 октября 2026 года. Относится к версии 1.1.1.
 
 Go Through Tabs соединяет обычную историю страниц с переходами между вкладками, открытыми по ссылкам. Для этого расширение обрабатывает данные истории локально в Chrome.
 
@@ -30,6 +30,8 @@ Go Through Tabs соединяет обычную историю страниц 
 
 Собственная история посещений и список закрытых вкладок Chrome управляются настройками браузера. Удаление расширения не удаляет историю, которую хранит сам Chrome.
 
+При открытии через Command + клик или среднюю кнопку временная локальная страница содержит целевой адрес во фрагменте URL. Это позволяет клавишам работать до ответа сайта и позволяет Chrome повторно открыть такой адрес. После успешной загрузки сайта временная запись заменяется. Если вкладку закрыть раньше, временный URL может остаться во встроенном списке закрытых сессий Chrome; он управляется браузером отдельно от `storage.session`. Фрагмент не передаётся сайту, расширение не отправляет исходный HTTP `Referer` при таком открытии.
+
 ## Контакт
 
 Вопросы о конфиденциальности можно задать через [Issues Go Through Tabs](https://github.com/CrazyMeizy/Go-Through-Tabs/issues). Не включайте в публичные обращения приватные адреса, данные сессий или другой личный контент.
@@ -45,6 +47,8 @@ It does not read page text, form values, passwords, cookies, payment details or 
 Extension state is held in browser memory using `chrome.storage.session`. It is cleared when Chrome fully exits or the extension is disabled, removed, updated or reloaded by Chrome. Turning off the popup switch disables the special shortcuts but does not clear linked-history state. Disable the extension in `chrome://extensions/` or fully exit Chrome to clear that state.
 
 The extension has no backend, analytics, advertising SDK or remote code. It does not send extension-held data to the developer or third parties, or synchronize that state with a Google account. Opening/restoring a page loads that website normally through Chrome. The website's own handling and Chrome's independent history/session storage are outside extension state.
+
+Command-click and middle-click first open a temporary local extension page whose URL fragment holds the target URL, then replace that entry with the website. The temporary page keeps the keyboard handler available before the first server response. If closed before the website commits, its URL may remain in Chrome's own recently closed sessions. Chrome manages those independently of extension session storage. The fragment is not sent to the website; this opening path does not send the source page's HTTP Referer header.
 
 Browsing data is used only for linked-tab navigation and restoration. It is not used for advertising, profiling or unrelated purposes. Use of data obtained through Chrome APIs follows the Chrome Web Store User Data Policy, including Limited Use restrictions.
 
