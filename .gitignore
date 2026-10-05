@@ -1,0 +1,10 @@
+dist/
+test-results/
+node_modules/
+.DS_Store
+premium-audit.json
+popup-test-results.json
+*.crx
+*.pem
+.env
+.env.*

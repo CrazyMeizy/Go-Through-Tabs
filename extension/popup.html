@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go Through Tabs</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <header class="brand">
+      <img src="icons/linked-tabs.svg" width="40" height="40" alt="" class="brand-icon">
+      <div>
+        <h1>Go Through Tabs</h1>
+        <p class="tagline">Назад и вперёд между вкладками</p>
+      </div>
+    </header>
+
+    <section class="control" id="control" data-phase="loading" aria-labelledby="control-title">
+      <div class="control-copy">
+        <h2 id="control-title">Навигация по вкладкам</h2>
+        <p class="control-status" role="status" aria-atomic="true">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="control-state">Проверяем состояние…</span>
+        </p>
+      </div>
+      <button id="toggle" class="switch" type="button" role="switch" aria-checked="false"
+        aria-labelledby="control-title" aria-describedby="control-state" aria-busy="true" disabled>
+        <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+      </button>
+    </section>
+
+    <ul class="shortcuts" aria-label="Сочетания клавиш">
+      <li class="shortcut-row">
+        <div class="shortcut-copy">
+          <h2>Назад</h2>
+          <p>В начале истории — к исходной вкладке</p>
+        </div>
+        <span class="keys" role="img" aria-label="Command и левая квадратная скобка">
+          <kbd aria-hidden="true">⌘</kbd><kbd aria-hidden="true">[</kbd>
+        </span>
+      </li>
+      <li class="shortcut-row">
+        <div class="shortcut-copy">
+          <h2>Вперёд</h2>
+          <p>Вернуть закрытую вкладку рядом</p>
+        </div>
+        <span class="keys" role="img" aria-label="Command и правая квадратная скобка">
+          <kbd aria-hidden="true">⌘</kbd><kbd aria-hidden="true">]</kbd>
+        </span>
+      </li>
+    </ul>
+
+    <aside class="feedback" id="connection-error" hidden aria-label="Ошибка связи">
+      <svg class="feedback-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="10" cy="10" r="7.5"></circle><path d="M10 6v4m0 3v.1"></path>
+      </svg>
+      <div>
+        <p id="error-text" role="status" aria-atomic="true"></p>
+        <button id="retry" class="retry" type="button" disabled>Повторить проверку</button>
+      </div>
+    </aside>
+
+    <aside class="feedback" id="notice" hidden aria-label="Уведомление">
+      <svg class="feedback-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="10" cy="10" r="7.5"></circle><path d="M10 6v4m0 3v.1"></path>
+      </svg>
+      <p id="notice-text" role="status" aria-atomic="true" tabindex="0"></p>
+    </aside>
+
+    <footer class="footer">
+      <p class="focus-hint">
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="m5 3 10 7-5 1-2 5-3-13Z"></path>
+        </svg>
+        <span>Сочетания работают, когда фокус на веб-странице.</span>
+      </p>
+      <details class="help">
+        <summary>
+          <span>Как пользоваться</span>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 4 4 4-4 4"></path></svg>
+        </summary>
+        <div class="help-copy">
+          <p>Откройте ссылку в новой вкладке. Сначала сочетания проходят историю страницы, затем переходят между связанными вкладками.</p>
+          <p><strong>⌘ [</strong> закрывает вкладку у начала её истории. <strong>⌘ ]</strong> восстанавливает её справа от исходной.</p>
+          <p>После установки или обновления перезагрузите веб-вкладки.</p>
+        </div>
+      </details>
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

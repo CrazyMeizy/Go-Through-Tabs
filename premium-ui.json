@@ -1,0 +1,10 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["extension"],
+  "locale": "ru-RU",
+  "canonicalMap": "DESIGN.md",
+  "requiredCapabilities": ["Scrollbar", "Toast"],
+  "requiredCommands": ["unit", "popup"],
+  "commands": {"unit": "npm test", "popup": "npm run test:popup"},
+  "evidence": {"failurePaths": "tests/popup.mjs", "keyboard": "tests/popup.mjs"}
+}

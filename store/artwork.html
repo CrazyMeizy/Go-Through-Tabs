@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Go Through Tabs — материалы магазина</title>
+<style>
+  :root{--bg:#f7f8fa;--text:#1f2530;--muted:#5f6875;--blue:#3568d4;--surface:#fff;--border:#dce1e8;--key-shadow:#cbd2dc;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font)}
+  body.dark{--bg:#202328;--text:#eef1f6;--muted:#aab3c1;--blue:#90b0ff;--surface:#2c3037;--border:#454c59;--key-shadow:#171a20}
+  .shot{width:1280px;height:800px;padding:60px 72px;position:relative;overflow:hidden}
+  .brand{display:flex;align-items:center;gap:16px;font-size:24px;font-weight:650;letter-spacing:-.6px}
+  .brand img{width:52px;height:52px}
+  .content{display:grid;grid-template-columns:620px 408px;gap:36px;align-items:center;margin-top:42px}
+  h1{margin:0 0 26px;font-size:60px;line-height:1.06;letter-spacing:-2.6px;font-weight:650}
+  .lead{font-size:23px;line-height:1.45;color:var(--muted);margin:0;max-width:530px}
+  .directions{display:grid;gap:24px;margin-top:36px}
+  .direction{display:flex;align-items:center;gap:20px;font-size:17px;line-height:1.5}
+  .keys{display:flex;gap:6px;flex-shrink:0}
+  kbd{display:flex;justify-content:center;align-items:center;width:44px;height:46px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 2px var(--key-shadow);font-family:var(--font);font-size:23px;font-weight:500}
+  .direction strong{display:block;font-size:20px;font-weight:600}
+  .direction span{color:var(--muted)}
+  .panel{width:408px;border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:0 12px 32px #121c3014;background:var(--bg)}
+  .panel img{width:100%;display:block}
+  .footer{position:absolute;bottom:42px;left:72px;right:72px;display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:20px;font-size:15px;color:var(--muted)}
+  .promo{display:none;width:440px;height:280px;padding:26px 28px;position:relative;overflow:hidden}
+  .promo .brand{font-size:25px;gap:12px}.promo .brand img{width:46px;height:46px}
+  .promo p{font-size:22px;line-height:1.25;letter-spacing:-.5px;font-weight:600;margin:22px 0 18px}
+  .promo .shortcuts{display:flex;align-items:center;gap:14px;color:var(--muted);font-size:26px}
+  .promo kbd{width:36px;height:38px;font-size:21px;border-radius:7px}
+  .promo small{display:block;margin-top:22px;color:var(--muted);font-size:13px}
+  body.small .shot{display:none}body.small .promo{display:block}
+</style>
+<main class="shot">
+  <header class="brand"><img src="../extension/icons/linked-tabs.svg" alt="">Go Through Tabs</header>
+  <div class="content">
+    <div>
+      <h1>Назад и вперёд.<br>Между вкладками.</h1>
+      <p class="lead">Продолжайте историю страниц<br>во вкладках, открытых по ссылкам.</p>
+      <div class="directions">
+        <div class="direction"><div class="keys"><kbd>⌘</kbd><kbd>[</kbd></div><div><strong>Назад — к исходной вкладке</strong><span>Дочерняя закрывается у начала истории</span></div></div>
+        <div class="direction"><div class="keys"><kbd>⌘</kbd><kbd>]</kbd></div><div><strong>Вперёд — вернуть закрытую</strong><span>Восстанавливается рядом с исходной</span></div></div>
+      </div>
+    </div>
+    <div class="panel"><img id="popup" src="../screenshots/popup-native-light.png" alt="Настоящее окно расширения в Chrome"></div>
+  </div>
+  <footer class="footer"><span>Chrome на macOS · Интерфейс на русском</span><span id="theme">Светлая тема · Локальная история</span></footer>
+</main>
+<main class="promo">
+  <header class="brand"><img src="../extension/icons/linked-tabs.svg" alt="">Go Through Tabs</header>
+  <p>Назад и вперёд<br>между вкладками</p>
+  <div class="shortcuts"><div class="keys"><kbd>⌘</kbd><kbd>[</kbd></div><span>↔</span><div class="keys"><kbd>⌘</kbd><kbd>]</kbd></div></div>
+  <small>Для Chrome на macOS</small>
+</main>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode');
+  if (mode === 'dark') {
+    document.body.classList.add('dark');
+    document.querySelector('#popup').src = '../screenshots/popup-native-dark.png';
+    document.querySelector('#theme').textContent = 'Тёмная тема · Локальная история';
+  }
+  if (mode === 'small') document.body.classList.add('small');
+</script>
+</html>
