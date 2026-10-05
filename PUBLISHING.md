@@ -4,7 +4,7 @@
 
 1. Репозиторий проекта: [CrazyMeizy/Go-Through-Tabs](https://github.com/CrazyMeizy/Go-Through-Tabs).
 2. Используется лицензия MIT. В репозитории находятся расширение, документация, тесты и материалы магазина; `dist/`, зависимости, временные отчёты и ключи не публикуются.
-3. Создайте выпуск `v1.1.1` и приложите архив ручной установки и его SHA-256. Исходные файлы доступны непосредственно в папке `extension/`.
+3. Создайте выпуск `v1.1.2` и приложите архив ручной установки и его SHA-256. Исходные файлы доступны непосредственно в папке `extension/`.
 4. Сайт проекта: [репозиторий](https://github.com/CrazyMeizy/Go-Through-Tabs). Поддержка: [Issues](https://github.com/CrazyMeizy/Go-Through-Tabs/issues). Политика конфиденциальности: [PRIVACY.md](https://github.com/CrazyMeizy/Go-Through-Tabs/blob/main/PRIVACY.md).
 
 Локальный Git-коммит должен использовать выбранное вами имя и публичный либо GitHub noreply email. Не добавляйте в открытый репозиторий рабочие адреса, токены, приватные ключи и личные URL браузера.
@@ -16,7 +16,7 @@ npm test
 npm run package
 ```
 
-Загружайте **`dist/go-through-tabs-chrome-web-store-1.1.1.zip`**. В нём `manifest.json` находится в корне. `go-through-tabs-1.1.1.zip` с внешней папкой предназначен для ручной установки.
+Загружайте **`dist/go-through-tabs-chrome-web-store-1.1.2.zip`**. В нём `manifest.json` находится в корне. `go-through-tabs-1.1.2.zip` с внешней папкой предназначен для ручной установки.
 
 Правило структуры и предел описания в 132 символа: [Prepare your extension](https://developer.chrome.com/docs/webstore/prepare). Текущая версия — Manifest V3, со всеми локальными ресурсами и без удалённого кода.
 

@@ -13,6 +13,7 @@ const profile = await mkdtemp(resolve(tmpdir(), 'go-through-tabs-loading-'));
 const pending = new Map();
 const requests = new Map();
 const requestHeaders = new Map();
+const requestMethods = new Map();
 const released = new Set();
 const html = pathname => `<!doctype html><title>${pathname}</title><body tabindex="0">
   <a id="child" target="_blank" href="/child">Child</a>
@@ -20,7 +21,15 @@ const html = pathname => `<!doctype html><title>${pathname}</title><body tabinde
 const server = createServer((request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
   requests.set(pathname, (requests.get(pathname) || 0) + 1);
+  const methods = requestMethods.get(pathname) || [];
+  methods.push(request.method);
+  requestMethods.set(pathname, methods);
   requestHeaders.set(pathname, {cookie: request.headers.cookie || '', referer: request.headers.referer || ''});
+  if (pathname === '/redirect-initial') {
+    response.writeHead(302, {Location: '/headers-redirect-target'});
+    response.end();
+    return;
+  }
   if (pathname.startsWith('/headers-') && !released.has(pathname)) {
     pending.set(pathname, response);
     return;
@@ -84,14 +93,15 @@ function release(pathname) {
     response.end(pathname.startsWith('/resource-') ? '' : html(pathname));
   }
 }
-async function attachNewChild(pathname, action) {
+async function attachNewChild(pathname, action, destination = pathname) {
   const browserCdp = await context.browser().newBrowserCDPSession();
   const before = new Set((await browserCdp.send('Target.getTargets')).targetInfos.map(target => target.targetId));
   const count = requests.get(pathname) || 0;
   await action();
   await until(() => (requests.get(pathname) || 0) > count, `${pathname} request started`);
+  const possibleUrls = new Set([`${childBase}${pathname}`, `${childBase}${destination}`]);
   const tab = await until(async () => (await tabs()).find(tab =>
-    tab.url === `${childBase}${pathname}` || tab.pendingUrl === `${childBase}${pathname}`), 'child tab known');
+    possibleUrls.has(tab.url) || possibleUrls.has(tab.pendingUrl)), 'child tab known');
   const target = await until(async () => (await browserCdp.send('Target.getTargets')).targetInfos.find(target => !before.has(target.targetId) && target.type === 'page'), 'child target known');
   const {sessionId} = await browserCdp.send('Target.attachToTarget', {targetId: target.targetId, flatten: false});
   let sequence = 0;
@@ -124,11 +134,11 @@ async function attachNewChild(pathname, action) {
   await until(async () => Object.values((await read()).nodes).some(node => node.tabId === tab.id && node.parentId), 'link known');
   return {child, tab};
 }
-async function openChild(parent, pathname, method = 'click') {
+async function openChild(parent, pathname, method = 'click', linkPathname = pathname) {
   await parent.locator('#child').evaluate((link, {url, method}) => {
     link.href = url;
     link.target = method === 'click' ? '_blank' : '_self';
-  }, {url: `${childBase}${pathname}`, method});
+  }, {url: `${childBase}${linkPathname}`, method});
   return attachNewChild(pathname, () => parent.locator('#child').click({
     noWaitAfter: true,
     ...(method === 'cmd-click' ? {modifiers: ['Meta']} : {}),
@@ -227,6 +237,258 @@ try {
     release(pathname);
     passed(`${method} child closes before first response without issuing duplicate target requests`);
   }
+  // Booking and other sites handle clicks on cards before an event bubbles to
+  // window. Exercise real trusted clicks, including native and script opening,
+  // while the destination's first response remains indefinitely blocked.
+  for (const handler of ['stop-propagation', 'stop-immediate', 'site-open', 'site-open-different-url']) {
+    const pathname = `/headers-${handler}`;
+    const linkPathname = handler === 'site-open-different-url' ? '/unused-site-link-target' : pathname;
+    const source = await context.newPage();
+    await source.goto(`${base}/source-${handler}`);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.url === source.url() && node.currentKey), `${handler} source observed`);
+    await source.locator('#child').evaluate((link, {handler, actualURL}) => {
+      const card = document.createElement('div');
+      link.replaceWith(card);
+      card.append(link);
+      const target = handler === 'stop-propagation' ? card : link;
+      target.addEventListener('click', event => {
+        window.__loadingSiteHandled = true;
+        if (handler === 'stop-propagation') event.stopPropagation();
+        if (handler === 'stop-immediate') event.stopImmediatePropagation();
+        if (handler.startsWith('site-open')) {
+          event.preventDefault();
+          event.stopPropagation();
+          window.open(handler === 'site-open-different-url' ? actualURL : link.href, '_blank', 'noopener');
+        }
+      });
+    }, {handler, actualURL: `${childBase}${pathname}`});
+    const {child, tab} = await openChild(source, pathname, 'cmd-click', linkPathname);
+    if (handler !== 'stop-propagation') {
+      // Native/script fallback first opens the browser's uncommitted blank
+      // document, then replaces it with the keyboard reader. The second HTTP
+      // request proves the reader started its navigation; neither response is
+      // released, so this still tests Back before the first website response.
+      await until(() => (requests.get(pathname) || 0) >= 2,
+        `${handler} protected target request started`);
+    }
+    assert.equal(await source.evaluate(() => window.__loadingSiteHandled), true,
+      `${handler} site handler received the trusted click`);
+    assert.equal((await worker.evaluate(id => chrome.tabs.get(id), tab.id)).status, 'loading');
+    assert.ok(pending.has(pathname), `${handler} response remains blocked`);
+    if (handler === 'site-open-different-url') assert.equal(requests.get(linkPathname) || 0, 0,
+      'only the URL selected by the site is requested');
+    const firstRequestCount = requests.get(pathname);
+    const started = Date.now();
+    await child.key();
+    await until(() => child.isClosed(), `${handler} child closes before first response`, 1500);
+    const backMs = Date.now() - started;
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === `${childBase}${pathname}` && !node.closed.pending), `${handler} close recorded`);
+    const sourceTab = (await tabs()).find(tab => tab.url === source.url());
+    assert.equal(sourceTab.active, true, `${handler} Back activates its source`);
+    const restored = await restoreChild(source, pathname);
+    await restored.child.key();
+    await until(() => restored.child.isClosed(), `${handler} restored child closes while response is still blocked`, 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === `${childBase}${pathname}` && !node.closed.pending), `${handler} restored close recorded`);
+    assert.ok(pending.has(pathname), `${handler} restoration did not depend on server response`);
+    console.log(`OBSERVE ${handler} target requests: ${firstRequestCount} opening; ${requests.get(pathname)} including restoration`);
+    release(pathname);
+    await source.close();
+    passed(`${handler} Cmd-click child closes before first response and restores the correct target (${backMs} ms Back)`);
+  }
+  {
+    const pathname = '/headers-site-open-fragment';
+    const destination = `${pathname}#booking-details`;
+    const url = `${childBase}${destination}`;
+    const source = await context.newPage();
+    await source.goto(`${base}/source-site-open-fragment`);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.url === source.url() && node.currentKey), 'fragment source observed');
+    await source.locator('#child').evaluate((link, url) => {
+      link.href = url;
+      link.target = '_self';
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.open(link.href, '_blank', 'noopener');
+      });
+    }, url);
+    const {child, tab} = await attachNewChild(pathname, () =>
+      source.locator('#child').click({modifiers: ['Meta'], noWaitAfter: true}), destination);
+    await until(() => (requests.get(pathname) || 0) >= 2, 'fragment protected target request started');
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.tabId === tab.id && node.loadingURL === url), 'fragment target protected before first response');
+    assert.ok(pending.has(pathname), 'fragment target response remains blocked');
+    assert.ok(requestMethods.get(pathname).every(method => method === 'GET'), 'fragment target remains a GET');
+    await child.key();
+    await until(() => child.isClosed(), 'script-opened fragment child closes before first response', 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === url && !node.closed.pending), 'closed target retains fragment');
+    const sourceTab = (await tabs()).find(tab => tab.url === source.url());
+    await focus(source, sourceTab.id);
+    const restored = await attachNewChild(pathname, () =>
+      source.keyboard.press('Meta+BracketRight'), destination);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.tabId === restored.tab.id && node.loadingURL === url), 'restored target retains fragment while pending');
+    release(pathname);
+    await until(async () => {
+      const current = await worker.evaluate(id => chrome.tabs.get(id), restored.tab.id);
+      return current.status === 'complete' && current.url === url;
+    }, 'restored page commits with its original fragment');
+    await restored.child.key();
+    await until(() => restored.child.isClosed(), 'fragment introduces no placeholder history entry', 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === url && !node.closed.pending), 'loaded fragment close recorded');
+    await source.close();
+    passed('script-opened GET with a fragment closes before first response and restores the complete URL');
+  }
+  {
+    const pathname = '/headers-posted';
+    const source = await context.newPage();
+    await source.goto(`${base}/source-posted`);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.url === source.url() && node.currentKey), 'POST source observed');
+    await source.locator('#child').evaluate(link => {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = link.href;
+        form.target = '_blank';
+        const input = document.createElement('input');
+        input.name = 'booking-fixture';
+        input.value = 'preserve-post';
+        form.append(input);
+        document.body.append(form);
+        form.submit();
+      });
+    });
+    const {child, tab} = await openChild(source, pathname, 'cmd-click');
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const current = await worker.evaluate(id => chrome.tabs.get(id), tab.id);
+    const node = Object.values((await read()).nodes).find(node => node.tabId === tab.id);
+    assert.equal(current.url, '', 'POST remains a native initial document');
+    assert.equal(current.pendingUrl, `${childBase}${pathname}`);
+    assert.equal(node.loadingURL, undefined, 'POST is never wrapped in a GET loading document');
+    assert.deepEqual(requestMethods.get(pathname), ['POST'], 'only the original POST request is issued');
+    assert.ok(pending.has(pathname), 'POST response remains blocked');
+    release(pathname);
+    await until(async () => (await worker.evaluate(id => chrome.tabs.get(id), tab.id)).status === 'complete', 'POST response commits');
+    assert.deepEqual(requestMethods.get(pathname), ['POST'], 'completion does not introduce a GET request');
+    await child.close();
+    await source.close();
+    passed('site-cancelled Cmd-click submitting a POST form stays native and does not replay as GET');
+  }
+  {
+    const pathname = '/headers-consumed-intent';
+    const {child} = await openChild(parent, pathname, 'cmd-click');
+    await child.key();
+    await until(() => child.isClosed(), 'custom Cmd-click closes before unrelated native opening', 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === `${childBase}${pathname}` && !node.closed.pending), 'custom close recorded before native opening');
+    // The same URL intentionally reappears immediately. A completed custom
+    // open must consume its click intent rather than wrapping this later call.
+    const native = await attachNewChild(pathname, () => parent.evaluate(url =>
+      window.open(url, '_blank', 'noopener'), `${childBase}${pathname}`));
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const current = await worker.evaluate(id => chrome.tabs.get(id), native.tab.id);
+    const node = Object.values((await read()).nodes).find(node => node.tabId === native.tab.id);
+    assert.equal(current.url, '', 'later unrelated window.open remains a native initial document');
+    assert.equal(current.pendingUrl, `${childBase}${pathname}`);
+    assert.equal(node.loadingURL, undefined, 'consumed click intent cannot wrap a later script opening');
+    assert.equal(requests.get(pathname), 2, 'one request per custom and later native opening');
+    release(pathname);
+    await native.child.close();
+    passed('successful custom Cmd-click consumes its intent before a later native window.open of the same URL');
+  }
+  {
+    const pathname = '/headers-cold-worker-site-open';
+    const source = await context.newPage();
+    await source.goto(`${base}/source-cold-worker-site-open`);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.url === source.url() && node.currentKey), 'cold worker source observed');
+    await source.locator('#child').evaluate((link, url) => {
+      link.href = url;
+      link.target = '_self';
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.open(link.href, '_blank', 'noopener');
+      });
+    }, `${childBase}${pathname}`);
+    await worker.evaluate(() => {globalThis.__loadingColdOpenMarker = 'previous scope';});
+    const cdp = await context.browser().newBrowserCDPSession();
+    const target = (await cdp.send('Target.getTargets')).targetInfos.find(target =>
+      target.type === 'service_worker' && target.url === worker.url());
+    assert.ok(target, 'worker target exists before cold script opening');
+    assert.equal((await cdp.send('Target.closeTarget', {targetId: target.targetId})).success, true);
+    await cdp.detach();
+    const {child, tab} = await attachNewChild(pathname, async () => {
+      await source.locator('#child').click({modifiers: ['Meta'], noWaitAfter: true});
+      worker = await until(() => context.serviceWorkers().find(item =>
+        item.url().includes(extensionId)), 'worker available after script opening');
+    });
+    assert.equal(await worker.evaluate(() => globalThis.__loadingColdOpenMarker), undefined,
+      'script opening restarted a fresh worker execution scope');
+    const sourceNode = Object.values((await read()).nodes).find(node => node.tabId === tab.id);
+    assert.equal(sourceNode.loadingURL, `${childBase}${pathname}`);
+    assert.ok(pending.has(pathname));
+    await until(() => (requests.get(pathname) || 0) >= 2, 'cold worker protected target request started');
+    const beforeBackRequests = requests.get(pathname);
+    const beforeBack = await worker.evaluate(id => chrome.tabs.get(id), tab.id);
+    const beforeBackFrames = await worker.evaluate(tabId =>
+      chrome.webNavigation.getAllFrames({tabId}), tab.id);
+    await child.key();
+    try {
+      await until(() => child.isClosed(), 'script-opened child closes after cold worker startup', 1500);
+    } catch (error) {
+      console.log('DIAGNOSE cold-worker-site-open', JSON.stringify({beforeBack, beforeBackRequests, beforeBackFrames,
+        afterBack: await worker.evaluate(id => chrome.tabs.get(id).catch(() => null), tab.id),
+        node: (await read()).nodes[sourceNode.id], requests: requests.get(pathname)}));
+      throw error;
+    }
+    const closed = await until(async () => (await read()).nodes[sourceNode.id]?.closed, 'cold script open close recorded');
+    assert.equal(closed.url, `${childBase}${pathname}`);
+    assert.equal(closed.parentId, sourceNode.parentId);
+    console.log(`OBSERVE cold-worker-site-open target requests: ${requests.get(pathname)}`);
+    release(pathname);
+    await source.close();
+    passed('site script opening after a cold worker startup supports Back before first response');
+  }
+  {
+    const pathname = '/redirect-initial';
+    const destination = '/headers-redirect-target';
+    await parent.locator('#child').evaluate((link, url) => {
+      link.href = url;
+      link.target = '_self';
+    }, `${childBase}${pathname}`);
+    const {child, tab} = await attachNewChild(pathname, () =>
+      parent.locator('#child').click({modifiers: ['Meta'], noWaitAfter: true}), destination);
+    await until(() => pending.has(destination), 'redirect final response held');
+    assert.equal((await worker.evaluate(id => chrome.tabs.get(id), tab.id)).status, 'loading');
+    await child.key();
+    await until(() => child.isClosed(), 'redirected child closes before final response', 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === `${childBase}${pathname}` && !node.closed.pending), 'redirect original target saved');
+    const parentTab = (await tabs()).find(tab => tab.url === parent.url());
+    await focus(parent, parentTab.id);
+    const restored = await attachNewChild(pathname, () =>
+      parent.keyboard.press('Meta+BracketRight'), destination);
+    assert.equal(requests.get(pathname), 2, 'restoration starts at original redirect URL');
+    release(destination);
+    await until(async () => {
+      const current = await worker.evaluate(id => chrome.tabs.get(id), restored.tab.id);
+      return current.status === 'complete' && current.url === `${childBase}${destination}`;
+    }, 'restored redirect target finishes at correct destination');
+    await restored.child.key();
+    await until(() => restored.child.isClosed(), 'redirect introduces no placeholder Back step', 1500);
+    await until(async () => Object.values((await read()).nodes).some(node =>
+      node.closed?.url === `${childBase}${destination}` && !node.closed.pending), 'loaded redirect close recorded');
+    passed('redirected Cmd-click closes before final response and restores without an extra history entry');
+  }
   {
     const pathname = '/headers-cancelled';
     await parent.locator('#child').evaluate((link, url) => {
@@ -241,6 +503,24 @@ try {
     assert.equal(requests.get(pathname) || 0, 0, 'site cancellation prevents target request');
     await parent.locator('#child').evaluate(link => {link.onclick = null;});
     passed('site-cancelled Cmd-click does not create a tab or request target');
+  }
+  {
+    const pathname = '/headers-cancelled-stopped';
+    await parent.locator('#child').evaluate((link, url) => {
+      link.href = url;
+      link.target = '_self';
+      link.onclick = event => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+    }, `${childBase}${pathname}`);
+    const before = (await tabs()).map(tab => tab.id).sort();
+    await parent.locator('#child').click({modifiers: ['Meta'], noWaitAfter: true});
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.deepEqual((await tabs()).map(tab => tab.id).sort(), before, 'stopped site cancellation prevents new tab');
+    assert.equal(requests.get(pathname) || 0, 0, 'stopped site cancellation prevents target request');
+    await parent.locator('#child').evaluate(link => {link.onclick = null;});
+    passed('site-cancelled and propagation-stopped Cmd-click does not create a tab or request target');
   }
   {
     const {child, tab} = await openChild(parent, '/blocked-script');

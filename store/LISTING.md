@@ -16,6 +16,8 @@ Go Through Tabs для Chrome на macOS соединяет привычные �
 
 Для Command + клик и средней кнопки возврат доступен даже до первого ответа сайта. Используется временная локальная страница, которая заменяется сайтом без дополнительного шага истории. Этот способ не передаёт исходный HTTP Referer; штатное открытие через меню Chrome сохраняется. Для других способов открытия скобки доступны после появления первого документа.
 
+Поддерживаются карточки, останавливающие событие клика, и GET-вкладки, открытые обработчиком сайта через JavaScript. Такой резервный путь может отменить уже начатый запрос и повторить его. HTTP-метод проверяется локально; POST-формы сохраняют штатное открытие.
+
 Данные истории обрабатываются только локально в Chrome: адреса страниц, сведения о записях истории и связи вкладок. Нет серверов, аналитики и передачи этих данных разработчику.
 
 Chrome 120+ на macOS. Интерфейс на русском языке. Нужен фокус на HTTP/HTTPS-странице. Адресная строка, служебные страницы Chrome и встроенный PDF сохраняют штатное поведение браузера. Инкогнито не поддерживается. Перенос вкладки в другое окно разрывает связь.
@@ -34,6 +36,7 @@ Enable back/forward navigation across linked tabs in Chrome on macOS using Comma
 |---|---|
 | tabs | Read tab URLs and metadata, activate the source tab, close a linked child at its history boundary, and position restored tabs. Used only for the visible linked-history navigation feature. |
 | webNavigation | Identify tabs created by links and observe navigation/history-entry changes, including accessible frame history, so native page traversal happens before crossing a linked-tab boundary. |
+| webRequest | Observe only main-frame HTTP/HTTPS URL, method and request identifier to confirm GET before protecting an initially empty tab opened by a site's Command/middle-click handler. POST requests are never rerouted. No blocking listener, request bodies or headers are used; metadata stay in worker memory and are discarded on request completion/error, tab removal or worker shutdown. |
 | sessions | Restore the specific child-tab session closed by the extension, preserving Chrome's internal history when available. Read recently closed sessions to identify that exact tab rather than reopening an unrelated tab. |
 | storage | Hold tab relationships, navigation identifiers, restoration records and the enabled setting in chrome.storage.session between service-worker wakeups. No account synchronization or external storage is used. |
 | scripting | Install the packaged keyboard/navigation observer into existing eligible tabs when the extension is installed or updated. Only local content.js is injected; no remotely hosted code is executed. |
@@ -41,7 +44,7 @@ Enable back/forward navigation across linked tabs in Chrome on macOS using Comma
 
 ## Data usage
 
-**Web history:** locally processed URLs (including query/fragment), closed-tab titles, history-entry identifiers and tab relationships. Used only for the disclosed navigation feature. Stored in session memory; not transmitted to the developer, used for advertising or sold. Other listed categories such as personal communications, authentication information, financial data and website content are not accessed as page/form content by this extension.
+**Web history:** locally processed URLs (including query/fragment), closed-tab titles, history-entry identifiers and tab relationships. Used only for the disclosed navigation feature. Stored in session memory; not transmitted to the developer, used for advertising or sold. Main-frame request URL/method/identifier and short-lived click intentions are also processed only in worker memory to support safe early return; bodies and headers are not requested. Other listed categories such as personal communications, authentication information, financial data and website content are not accessed as page/form content by this extension.
 
 **Remote code:** No. All runtime JavaScript, CSS and images are included in the uploaded package.
 
@@ -64,5 +67,6 @@ Chrome 120+ on macOS. No login or credentials required. Interface language: Russ
 5. For source history A0 → A1 → A2 and child B0 → B1, verify back sequence B1 → B0 → A2 → A1 → A0 and forward sequence A0 → A1 → A2 → B0 → B1.
 6. Open the extension popup. Turn its switch off/on and reopen it to confirm the state. Shortcuts require focus on the page rather than the address bar. In a restored-session fallback, a notice explains that only the saved URL was reopened.
 7. Command-click a link to a server that delays its first response. Before any response arrives, activate the child and press Command + [: it closes immediately. Command + ] reopens the target next to its source; the pending child can close again before its response. Once loaded, Back closes at the first actual website entry, with no temporary loading-page step. There is no lost-history notice for a never-committed website.
+8. Repeat with a site handler that stops propagation or opens the destination via window.open (including a URL computed by the site). GET tabs retain early return; this fallback may cancel/repeat the first GET. A cancelled click without an opened tab creates no tab, and a POST form retains its POST request without a loader GET.
 
 Tabs without a known live source are not automatically closed. Incognito, Chrome internal pages, Chrome Web Store and the built-in PDF viewer are outside the supported scope. Disable other extensions intercepting these shortcuts during review.

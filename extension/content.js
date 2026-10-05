@@ -3,6 +3,8 @@
   globalThis.__linkedHistoryInstalled = true;
   const topFrame = window === window.top;
   let enabled = false;
+  const clickIntents = new WeakMap();
+  let intentSequence = 0;
 
   function snapshot(navigationType = null) {
     if (topFrame && !/^https?:$/.test(location.protocol)) return null;
@@ -60,10 +62,7 @@
     }
   }, true);
 
-  // A new tab's initial empty document has no content-script lifecycle yet.
-  // Commit our local keyboard reader before starting a Command/middle-click
-  // navigation. Bubble after target/document handlers so cancelled clicks stay cancelled.
-  function openLinkedTab(event) {
+  function clickedLink(event) {
     if (!enabled || !event.isTrusted || event.defaultPrevented || event.altKey || event.ctrlKey) return;
     const commandClick = event.type === 'click' && event.button === 0 && event.metaKey;
     const middleClick = event.type === 'auxclick' && event.button === 1;
@@ -74,14 +73,50 @@
     try {
       if (!chrome.runtime.id) return;
     } catch { return; }
+    return link;
+  }
+
+  // Remember the physical click before site handlers run. A site can stop
+  // propagation or open its own tab; the worker then protects that actual tab.
+  // This message alone never opens anything, so cancelled clicks stay cancelled.
+  function captureLinkedClick(event) {
+    const link = clickedLink(event);
+    if (!link) return;
+    const intentId = `${performance.timeOrigin}:${++intentSequence}`;
+    clickIntents.set(event, intentId);
+    try {
+      chrome.runtime.sendMessage({type: 'link-intent', intentId, url: link.href}).catch(() => {});
+    } catch { return; }
+
+    // Observe the propagation boundary after the site's handlers at that target.
+    // For stopImmediatePropagation / script-opened tabs the worker is the fallback.
+    const targets = event.composedPath().filter(target => target !== window &&
+      typeof target.addEventListener === 'function');
+    const stopped = next => {
+      if (next === event && next.cancelBubble) openLinkedTab(next);
+    };
+    for (const target of targets) target.addEventListener(event.type, stopped);
+    setTimeout(() => {
+      for (const target of targets) target.removeEventListener(event.type, stopped);
+    }, 0);
+  }
+
+  // Commit our local keyboard reader before starting the website navigation.
+  // Run after site handlers, retaining their cancellation and updated link URL.
+  function openLinkedTab(event) {
+    const link = clickedLink(event);
+    if (!link) return;
     const url = link.href;
     event.preventDefault();
     const fallback = () => window.open(url, '_blank', 'noopener');
     try {
-      chrome.runtime.sendMessage({type: 'open-linked-tab', url, active: event.shiftKey})
+      chrome.runtime.sendMessage({type: 'open-linked-tab', url, active: event.shiftKey,
+        intentId: clickIntents.get(event)})
         .then(response => { if (!response?.ok) fallback(); }).catch(fallback);
     } catch { fallback(); }
   }
+  window.addEventListener('click', captureLinkedClick, true);
+  window.addEventListener('auxclick', captureLinkedClick, true);
   window.addEventListener('click', openLinkedTab);
   window.addEventListener('auxclick', openLinkedTab);
 

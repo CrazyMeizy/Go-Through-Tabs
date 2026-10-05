@@ -9,6 +9,9 @@ const expectedActivations = new Set();
 const restoredTabs = new Set();
 const restoringWindows = new Map();
 const normalWindows = new Map();
+const linkIntents = new Map();
+const LINK_INTENT_MS = 1500;
+const mainRequests = new Map();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const ready = initialize();
@@ -39,6 +42,11 @@ async function initialize() {
   const tabs = await chrome.tabs.query({});
   const live = new Map(tabs.map(tab => [tab.id, tab]));
   for (const node of Object.values(model.state.nodes)) {
+    const tab = live.get(node.tabId);
+    if (node.waitingForLoadingReady && tab &&
+        !tab.url?.startsWith(`${LOADING_PAGE}#`) && !tab.pendingUrl?.startsWith(`${LOADING_PAGE}#`)) {
+      delete node.waitingForLoadingReady;
+    }
     if (node.closed?.pending) {
       if (live.has(node.tabId)) model.cancelClose(node);
       else if (node.closed.uncommitted) model.finishClose(node);
@@ -87,6 +95,7 @@ function observe(node, value) {
     (node.pendingNavigation?.key !== value.key ? node.pendingNavigation?.type : null);
   model.observe(node, {...value, navigationType: type || null});
   delete node.loadingURL;
+  delete node.waitingForLoadingReady;
   node.pendingNavigation = null;
 }
 
@@ -263,6 +272,80 @@ function loadingURL(url) {
   return `${LOADING_PAGE}#${encodeURIComponent(url)}`;
 }
 
+function networkURL(url) {
+  const value = new URL(url);
+  value.hash = '';
+  return value.href;
+}
+
+function clearLinkIntents(sourceId, intentId = null) {
+  for (const [key, intent] of linkIntents) {
+    if (intent.sourceId === sourceId && (intentId == null || intent.intentId === intentId)) {
+      linkIntents.delete(key);
+    }
+  }
+}
+
+function takeLinkIntent(details) {
+  const now = Date.now();
+  let candidate;
+  for (const [key, intent] of linkIntents) {
+    if (now - intent.capturedAt > LINK_INTENT_MS) {
+      linkIntents.delete(key);
+      continue;
+    }
+    if (intent.sourceId === details.sourceTabId && intent.frameId === details.sourceFrameId &&
+        (!candidate || intent.url === details.url && candidate.intent.url !== details.url)) {
+      candidate = {key, intent};
+    }
+  }
+  if (candidate) linkIntents.delete(candidate.key);
+  return candidate?.intent;
+}
+
+async function protectNativeTarget(details, tab, parentTab, child) {
+  if (!model.state.enabled || tab.windowId !== parentTab.windowId ||
+      !/^https?:/.test(details.url || '') || !/^https?:/.test(parentTab.url || '') ||
+      child.rootKey || child.currentKey || tab.url || tab.pendingUrl !== details.url) return;
+  const intent = takeLinkIntent(details);
+  if (!intent) return;
+  const frame = await boundedRead(chrome.webNavigation.getFrame({tabId: parentTab.id,
+    frameId: intent.frameId}));
+  if (!frame || frame.documentId !== intent.documentId) return;
+  // webNavigation does not expose the HTTP method. Observe it without bodies
+  // or headers so a site's POST form can never be replaced by a GET loader.
+  const deadline = Date.now() + 150;
+  let request;
+  while (Date.now() < deadline) {
+    request = mainRequests.get(tab.id);
+    if (request) break;
+    await delay(10);
+  }
+  if (!request || request.method !== 'GET' || networkURL(request.url) !== networkURL(details.url) ||
+      Date.now() - request.capturedAt > LINK_INTENT_MS) return;
+  // The site, rather than the default anchor action, opened the real target.
+  // Only replace its initial empty document, never an already committed page.
+  child.loadingURL = details.url;
+  child.waitingForLoadingReady = true;
+  await save();
+  const current = await chrome.tabs.get(tab.id).catch(() => null);
+  const currentRequest = mainRequests.get(tab.id);
+  if (!current || !model.state.enabled || current.windowId !== parentTab.windowId ||
+      current.url || current.pendingUrl !== details.url || !currentRequest ||
+      currentRequest.requestId !== request.requestId || currentRequest.method !== 'GET' ||
+      networkURL(currentRequest.url) !== networkURL(details.url)) {
+    delete child.loadingURL;
+    delete child.waitingForLoadingReady;
+    return;
+  }
+  try {
+    await chrome.tabs.update(tab.id, {url: loadingURL(details.url)});
+  } catch {
+    delete child.loadingURL;
+    delete child.waitingForLoadingReady;
+  }
+}
+
 async function openLinkedTab(sourceId, message) {
   const source = await chrome.tabs.get(sourceId);
   if (!model.state.enabled || !await normalTab(source) || !/^https?:/.test(source.url || '') ||
@@ -277,6 +360,7 @@ async function openLinkedTab(sourceId, message) {
     child.loadingURL = url;
     model.link(child, parent);
     await save();
+    clearLinkIntents(sourceId, message.intentId);
     return {ok: true};
   } catch (error) {
     if (tab) await chrome.tabs.remove(tab.id).catch(() => {});
@@ -307,6 +391,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message.type === 'toggle' && !sender.tab) {
     enqueue(async () => {
       model.state.enabled = !model.state.enabled;
+      linkIntents.clear();
+      mainRequests.clear();
       model.state.notice = null;
       await chrome.action.setBadgeText({text: model.state.enabled ? '' : 'OFF'});
       await save();
@@ -324,6 +410,23 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     enqueue(() => ({enabled: model.state.enabled})).then(respond);
     return true;
   }
+  if (message.type === 'link-intent') {
+    const capturedAt = Date.now();
+    if (typeof message.intentId !== 'string' || message.intentId.length > 100 ||
+        typeof message.url !== 'string' || !/^https?:/.test(message.url) ||
+        !/^https?:/.test(sender.url || '') && !/^https?:/.test(sender.origin || '')) return;
+    enqueue(() => {
+      if (!model.state.enabled || Date.now() - capturedAt > LINK_INTENT_MS) return;
+      // Intent is private to this content-script frame and expires quickly.
+      // A site's computed destination may differ from the anchor's tracking URL.
+      linkIntents.set(`${sourceId}:${sender.frameId}:${message.intentId}`, {
+        sourceId, frameId: sender.frameId, intentId: message.intentId,
+        url: message.url, capturedAt, documentId: sender.documentId,
+      });
+      while (linkIntents.size > 64) linkIntents.delete(linkIntents.keys().next().value);
+    });
+    return;
+  }
   if (message.type === 'open-linked-tab') {
     enqueue(() => openLinkedTab(sourceId, message)).then(respond)
       .catch(() => respond({ok: false}));
@@ -331,7 +434,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   }
   if (message.type === 'loading-ready' && sender.frameId === 0 &&
       sender.url?.startsWith(`${LOADING_PAGE}#`)) {
-    enqueue(() => ({ok: model.byTab(sourceId)?.loadingURL === message.url}))
+    enqueue(async () => {
+      const node = model.byTab(sourceId);
+      if (node?.loadingURL !== message.url) return {ok: false};
+      delete node.waitingForLoadingReady;
+      await save();
+      return {ok: true};
+    })
       .then(respond);
     return true;
   }
@@ -353,12 +462,18 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const tab = await chrome.tabs.get(sourceId).catch(() => null);
       if (!await normalTab(tab)) return;
       const node = model.ensure(tab);
+      if (node.waitingForLoadingReady) return;
+      if (node.loadingURL) {
+        const frame = await boundedRead(chrome.webNavigation.getFrame({tabId: sourceId, frameId: 0}));
+        if (!frame || sender.documentId !== frame.documentId) return;
+      }
       observe(node, message.snapshot);
       await save();
     });
   }
   if (message.type === 'navigation-start') {
     enqueue(() => {
+      clearLinkIntents(sourceId);
       const node = model.byTab(sourceId);
       if (node && node.currentKey === message.key) {
         node.pendingNavigation = {type: message.navigationType, key: message.key};
@@ -366,6 +481,19 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     });
   }
 });
+
+const mainRequestFilter = {urls: ['http://*/*', 'https://*/*'], types: ['main_frame']};
+chrome.webRequest.onBeforeRequest.addListener(details => {
+  if (details.tabId < 0 || model?.state.enabled === false) return;
+  mainRequests.set(details.tabId, {method: details.method, url: details.url,
+    requestId: details.requestId, capturedAt: Date.now()});
+  while (mainRequests.size > 64) mainRequests.delete(mainRequests.keys().next().value);
+}, mainRequestFilter);
+function forgetMainRequest(details) {
+  if (mainRequests.get(details.tabId)?.requestId === details.requestId) mainRequests.delete(details.tabId);
+}
+chrome.webRequest.onCompleted.addListener(forgetMainRequest, mainRequestFilter);
+chrome.webRequest.onErrorOccurred.addListener(forgetMainRequest, mainRequestFilter);
 
 chrome.tabs.onCreated.addListener(tab => {
   enqueue(async () => {
@@ -382,7 +510,9 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(details => {
     const tab = await chrome.tabs.get(details.tabId).catch(() => null);
     const parentTab = await chrome.tabs.get(details.sourceTabId).catch(() => null);
     if (!parentTab || !await normalTab(tab)) return;
-    model.link(model.ensure(tab, true), model.ensure(parentTab));
+    const child = model.ensure(tab, true);
+    model.link(child, model.ensure(parentTab));
+    await protectNativeTarget(details, tab, parentTab, child);
     await save();
   });
 });
@@ -409,6 +539,8 @@ chrome.tabs.onActivated.addListener(({tabId, windowId}) => {
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {
+  clearLinkIntents(tabId);
+  mainRequests.delete(tabId);
   enqueue(async () => {
     const node = model.byTab(tabId);
     if (node && !node.closed?.pending) model.removeManually(node);
@@ -417,6 +549,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
 });
 
 chrome.tabs.onDetached.addListener(tabId => {
+  clearLinkIntents(tabId);
   enqueue(async () => {
     model.detach(model.byTab(tabId));
     await save();
